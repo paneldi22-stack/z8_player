@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Z8 Player",
+    "slug": "z8-player",
+    "version": "0.1.0",
+    "orientation": "default",
+    "userInterfaceStyle": "automatic",
+    "platforms": [
+      "android",
+      "ios",
+      "web"
+    ],
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "android": {
+      "package": "app.z8player",
+      "versionCode": 1
+    },
+    "ios": {
+      "bundleIdentifier": "app.z8player"
+    },
+    "plugins": [
+      "expo-video",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ]
+  }
+}

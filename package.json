@@ -1,0 +1,31 @@
+{
+  "name": "z8-player",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "web": "expo start --web",
+    "export:web": "expo export --platform web",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~6.1.2",
+    "expo": "~54.0.0",
+    "expo-build-properties": "~1.0.0",
+    "expo-status-bar": "~3.0.0",
+    "expo-system-ui": "~6.0.0",
+    "expo-video": "~3.0.0",
+    "hls.js": "^1.5.17",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-native": "^0.81.5",
+    "react-native-web": "^0.21.4"
+  },
+  "devDependencies": {
+    "@types/react": "~19.1.0",
+    "typescript": "~5.9.2",
+    "vitest": "^2.1.8"
+  }
+}
