@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   BackHandler,
   Dimensions,
+  FlatList,
   PanResponder,
   StyleSheet,
   Text,
@@ -20,11 +21,19 @@ import { MediaItem, SubtitleCue } from './types';
 
 interface Props {
   item: MediaItem;
+  channelList?: MediaItem[];
   lang: AppLang;
+  onSelectChannel?: (next: MediaItem) => void;
   onClose: () => void;
 }
 
-export const PlayerScreen: React.FC<Props> = ({ item, lang, onClose }) => {
+export const PlayerScreen: React.FC<Props> = ({
+  item,
+  channelList = [],
+  lang,
+  onSelectChannel,
+  onClose,
+}) => {
   const t = TRANSLATIONS[lang];
   const videoViewRef = useRef<VideoView>(null);
   const player = useVideoPlayer(
@@ -39,6 +48,7 @@ export const PlayerScreen: React.FC<Props> = ({ item, lang, onClose }) => {
   );
 
   const [showControls, setShowControls] = useState(true);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(true);
   const [isBuffering, setIsBuffering] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -56,17 +66,37 @@ export const PlayerScreen: React.FC<Props> = ({ item, lang, onClose }) => {
   const lastTapRef = useRef<{ time: number; x: number }>({ time: 0, x: 0 });
   const restoredRef = useRef(false);
   const lastSavedSecRef = useRef(0);
+  const initialUrlRef = useRef(item.streamUrl);
+
+  // تبديل البث فوراً عند تغيير القناة داخل المشغل
+  useEffect(() => {
+    if (item.streamUrl !== initialUrlRef.current) {
+      initialUrlRef.current = item.streamUrl;
+      restoredRef.current = false;
+      setIsBuffering(true);
+      setErrorMsg(null);
+      player.replace({
+        uri: item.streamUrl,
+        headers: { 'User-Agent': 'IPTVSmartersPlayer' },
+      });
+      player.play();
+    }
+    StorageService.isFavorite(item.streamUrl).then(setIsFav);
+  }, [item, player]);
 
   useEffect(() => {
     ScreenOrientation.lockAsync(
       ScreenOrientation.OrientationLock.LANDSCAPE
     ).catch(() => {});
-    StorageService.isFavorite(item.streamUrl).then(setIsFav);
     Brightness.getBrightnessAsync()
       .then(setBrightness)
       .catch(() => {});
 
     const backSub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (drawerOpen) {
+        setDrawerOpen(false);
+        return true;
+      }
       onClose();
       return true;
     });
@@ -88,7 +118,7 @@ export const PlayerScreen: React.FC<Props> = ({ item, lang, onClose }) => {
       backSub.remove();
       statusSub.remove();
     };
-  }, [item, onClose, player, t.serverConnectError]);
+  }, [drawerOpen, onClose, player, t.serverConnectError]);
 
   useEffect(() => {
     const timer = setInterval(async () => {
@@ -98,12 +128,10 @@ export const PlayerScreen: React.FC<Props> = ({ item, lang, onClose }) => {
       setDurationSec(dur);
       setIsPlaying(player.playing);
 
-      if (!restoredRef.current && dur > 0 && item.type === 'movie') {
+      if (!restoredRef.current && dur > 0 && item.type !== 'live') {
         restoredRef.current = true;
         const savedMs = await StorageService.getSavedPosition(item.streamUrl);
-        if (savedMs > 5000) {
-          player.currentTime = savedMs / 1000;
-        }
+        if (savedMs > 5000) player.currentTime = savedMs / 1000;
       }
 
       if (cues.length > 0) {
@@ -122,9 +150,17 @@ export const PlayerScreen: React.FC<Props> = ({ item, lang, onClose }) => {
     return () => clearInterval(timer);
   }, [player, cues, item]);
 
+  const switchRelative = (step: number) => {
+    if (!onSelectChannel || channelList.length < 2) return;
+    const idx = channelList.findIndex((c) => c.id === item.id);
+    if (idx === -1) return;
+    const nextIdx = (idx + step + channelList.length) % channelList.length;
+    onSelectChannel(channelList[nextIdx]);
+  };
+
   const panResponder = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 12,
+      onMoveShouldSetPanResponder: (_, g) => !drawerOpen && Math.abs(g.dy) > 14,
       onPanResponderMove: (evt, g) => {
         const width = Dimensions.get('window').width;
         const isLeft = evt.nativeEvent.pageX < width / 2;
@@ -150,6 +186,7 @@ export const PlayerScreen: React.FC<Props> = ({ item, lang, onClose }) => {
   ).current;
 
   const handleScreenTap = (x: number) => {
+    if (drawerOpen) return;
     const now = Date.now();
     const width = Dimensions.get('window').width;
     if (now - lastTapRef.current.time < 300) {
@@ -178,7 +215,8 @@ export const PlayerScreen: React.FC<Props> = ({ item, lang, onClose }) => {
   };
 
   const cycleRate = () => {
-    const next = rate === 1.0 ? 1.25 : rate === 1.25 ? 1.5 : rate === 1.5 ? 2.0 : 1.0;
+    const next =
+      rate === 1.0 ? 1.25 : rate === 1.25 ? 1.5 : rate === 1.5 ? 2.0 : 1.0;
     setRate(next);
     player.playbackRate = next;
   };
@@ -206,7 +244,7 @@ export const PlayerScreen: React.FC<Props> = ({ item, lang, onClose }) => {
 
       {isBuffering && !errorMsg && (
         <View style={styles.centerStatus}>
-          <ActivityIndicator size="large" color="#F59E0B" />
+          <ActivityIndicator size="large" color="#C8E64C" />
         </View>
       )}
 
@@ -242,12 +280,22 @@ export const PlayerScreen: React.FC<Props> = ({ item, lang, onClose }) => {
         </View>
       ) : null}
 
-      {showControls && (
+      {showControls && !drawerOpen && (
         <View style={styles.overlay}>
           <View style={styles.topBar}>
             <TouchableOpacity onPress={onClose} style={styles.iconBtn}>
               <Text style={styles.btnLabel}>{t.back}</Text>
             </TouchableOpacity>
+            {channelList.length > 0 && (
+              <TouchableOpacity
+                onPress={() => setDrawerOpen(true)}
+                style={[styles.iconBtn, { backgroundColor: '#C8E64C' }]}
+              >
+                <Text style={{ color: '#0B132B', fontWeight: 'bold', fontSize: 12 }}>
+                  ☰ {t.channelList}
+                </Text>
+              </TouchableOpacity>
+            )}
             <Text style={styles.title} numberOfLines={1}>
               {item.name}
             </Text>
@@ -278,6 +326,14 @@ export const PlayerScreen: React.FC<Props> = ({ item, lang, onClose }) => {
           </View>
 
           <View style={styles.centerControls}>
+            {channelList.length > 1 && (
+              <TouchableOpacity
+                style={styles.switchBtn}
+                onPress={() => switchRelative(-1)}
+              >
+                <Text style={styles.switchBtnText}>⏮</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={styles.playBtn}
               onPress={() => (isPlaying ? player.pause() : player.play())}
@@ -286,15 +342,63 @@ export const PlayerScreen: React.FC<Props> = ({ item, lang, onClose }) => {
                 {isPlaying ? t.pause : t.play}
               </Text>
             </TouchableOpacity>
+            {channelList.length > 1 && (
+              <TouchableOpacity
+                style={styles.switchBtn}
+                onPress={() => switchRelative(1)}
+              >
+                <Text style={styles.switchBtnText}>⏭</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
-          {durationSec > 0 && (
+          {durationSec > 0 ? (
             <View style={styles.bottomBar}>
               <Text style={styles.timeText}>
                 {formatTime(positionSec)} / {formatTime(durationSec)}
               </Text>
             </View>
+          ) : (
+            <View />
           )}
+        </View>
+      )}
+
+      {drawerOpen && (
+        <View style={styles.drawer}>
+          <View style={styles.drawerHeader}>
+            <Text style={styles.drawerTitle}>{t.channelList}</Text>
+            <TouchableOpacity onPress={() => setDrawerOpen(false)}>
+              <Text style={{ color: '#C8E64C', fontWeight: 'bold' }}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <FlatList
+            data={channelList}
+            keyExtractor={(c) => c.id}
+            renderItem={({ item: ch }) => {
+              const active = ch.id === item.id;
+              return (
+                <TouchableOpacity
+                  style={[styles.drawerRow, active && styles.drawerRowActive]}
+                  onPress={() => {
+                    onSelectChannel?.(ch);
+                    setDrawerOpen(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.drawerRowText,
+                      active && { color: '#0B132B', fontWeight: 'bold' },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {ch.num ? `${ch.num}  ` : ''}
+                    {ch.name}
+                  </Text>
+                </TouchableOpacity>
+              );
+            }}
+          />
         </View>
       )}
     </View>
@@ -308,19 +412,19 @@ const styles = StyleSheet.create({
     position: 'absolute',
     alignSelf: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.8)',
+    backgroundColor: 'rgba(11,19,43,0.9)',
     padding: 18,
     borderRadius: 12,
     maxWidth: '80%',
   },
   errorText: { color: '#EF4444', textAlign: 'center', marginBottom: 12 },
   retryBtn: {
-    backgroundColor: '#F59E0B',
+    backgroundColor: '#C8E64C',
     paddingHorizontal: 18,
     paddingVertical: 8,
     borderRadius: 8,
   },
-  retryText: { color: '#000', fontWeight: 'bold' },
+  retryText: { color: '#0B132B', fontWeight: 'bold' },
   overlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.4)',
@@ -330,31 +434,47 @@ const styles = StyleSheet.create({
   topBar: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   title: { flex: 1, color: '#FFF', fontSize: 15, fontWeight: 'bold' },
   iconBtn: {
-    backgroundColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(11,19,43,0.75)',
     paddingHorizontal: 9,
     paddingVertical: 6,
     borderRadius: 6,
   },
   btnLabel: { color: '#FFF', fontWeight: '600', fontSize: 12 },
-  centerControls: { alignItems: 'center' },
+  centerControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 22,
+  },
+  switchBtn: {
+    backgroundColor: 'rgba(11,19,43,0.8)',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#C8E64C',
+  },
+  switchBtnText: { color: '#C8E64C', fontSize: 18, fontWeight: 'bold' },
   playBtn: {
-    backgroundColor: '#F59E0B',
+    backgroundColor: '#C8E64C',
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 30,
   },
-  playBtnText: { color: '#000', fontWeight: 'bold', fontSize: 16 },
+  playBtnText: { color: '#0B132B', fontWeight: 'bold', fontSize: 16 },
   bottomBar: { alignItems: 'center' },
   timeText: { color: '#FFF', fontSize: 13 },
   gestureBadge: {
     position: 'absolute',
     alignSelf: 'center',
-    backgroundColor: 'rgba(0,0,0,0.8)',
+    backgroundColor: 'rgba(11,19,43,0.85)',
     paddingHorizontal: 18,
     paddingVertical: 10,
     borderRadius: 10,
   },
-  gestureBadgeText: { color: '#F59E0B', fontSize: 18, fontWeight: 'bold' },
+  gestureBadgeText: { color: '#C8E64C', fontSize: 18, fontWeight: 'bold' },
   subBox: {
     position: 'absolute',
     bottom: 45,
@@ -365,4 +485,34 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   subText: { color: '#FFF', fontSize: 16, textAlign: 'center' },
+  drawer: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    width: 280,
+    backgroundColor: 'rgba(11,19,43,0.95)',
+    borderRightWidth: 1,
+    borderColor: '#1E3A8A',
+    padding: 12,
+  },
+  drawerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderColor: '#1E3A8A',
+    marginBottom: 8,
+  },
+  drawerTitle: { color: '#C8E64C', fontWeight: 'bold', fontSize: 15 },
+  drawerRow: {
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+    marginBottom: 4,
+    backgroundColor: '#162447',
+  },
+  drawerRowActive: { backgroundColor: '#C8E64C' },
+  drawerRowText: { color: '#FFF', fontSize: 13 },
 });
