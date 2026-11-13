@@ -1,0 +1,62 @@
+name: Build Expo APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Configure app.json
+        run: |
+          node -e '
+          const fs = require("fs");
+          const app = JSON.parse(fs.readFileSync("app.json", "utf8"));
+          app.expo = app.expo || {};
+          app.expo.android = app.expo.android || {};
+          if (!app.expo.android.package) app.expo.android.package = "com.paneldi22.z8player";
+          fs.writeFileSync("app.json", JSON.stringify(app, null, 2));
+          '
+
+      - name: Prebuild Android
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Allow HTTP IPTV Streams
+        run: |
+          node -e '
+          const fs = require("fs");
+          const p = "android/app/src/main/AndroidManifest.xml";
+          let xml = fs.readFileSync(p, "utf8");
+          if (!xml.includes("usesCleartextTraffic")) {
+            xml = xml.replace("<application", "<application android:usesCleartextTraffic=\"true\"");
+          }
+          fs.writeFileSync(p, xml);
+          '
+
+      - name: Build Release APK
+        run: cd android && chmod +x gradlew && ./gradlew assembleRelease
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: z8_player-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
