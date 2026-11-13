@@ -7,7 +7,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { AVPlaybackStatus, ResizeMode, Video } from 'expo-av';
+import { useVideoPlayer, VideoContentFit, VideoView } from 'expo-video';
 import * as Brightness from 'expo-brightness';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -21,22 +21,27 @@ interface Props {
 }
 
 export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
-  const videoRef = useRef<Video>(null);
+  const videoViewRef = useRef<VideoView>(null);
+  const player = useVideoPlayer(item.streamUrl, (p) => {
+    p.loop = false;
+    p.play();
+  });
+
   const [showControls, setShowControls] = useState(true);
   const [isPlaying, setIsPlaying] = useState(true);
   const [isFav, setIsFav] = useState(false);
-  const [resizeMode, setResizeMode] = useState<ResizeMode>(ResizeMode.CONTAIN);
+  const [contentFit, setContentFit] = useState<VideoContentFit>('contain');
   const [rate, setRate] = useState(1.0);
-  const [volume, setVolume] = useState(1.0);
   const [brightness, setBrightness] = useState(0.6);
   const [gestureText, setGestureText] = useState<string | null>(null);
 
-  const [positionMs, setPositionMs] = useState(0);
-  const [durationMs, setDurationMs] = useState(0);
+  const [positionSec, setPositionSec] = useState(0);
+  const [durationSec, setDurationSec] = useState(0);
   const [cues, setCues] = useState<SubtitleCue[]>([]);
   const [activeSubtitle, setActiveSubtitle] = useState('');
 
   const lastTapRef = useRef<{ time: number; x: number }>({ time: 0, x: 0 });
+  const restoredRef = useRef(false);
   const lastSavedSecRef = useRef(0);
 
   useEffect(() => {
@@ -55,41 +60,41 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
     };
   }, [item]);
 
-  const handleStatusUpdate = async (status: AVPlaybackStatus) => {
-    if (!status.isLoaded) return;
-    setIsPlaying(status.isPlaying);
-    setPositionMs(status.positionMillis);
-    setDurationMs(status.durationMillis || 0);
+  // تتبع الوقت والترجمة وحفظ إكمال المشاهدة
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      const cur = player.currentTime || 0;
+      const dur = player.duration || 0;
+      setPositionSec(cur);
+      setDurationSec(dur);
+      setIsPlaying(player.playing);
 
-    // عرض الترجمة المتزامنة
-    if (cues.length > 0) {
-      const current = cues.find(
-        (c) =>
-          status.positionMillis >= c.startMs && status.positionMillis <= c.endMs
-      );
-      setActiveSubtitle(current ? current.text : '');
-    }
-
-    // حفظ تقدم المشاهدة كل 5 ثواني
-    const sec = Math.floor(status.positionMillis / 1000);
-    if (sec - lastSavedSecRef.current >= 5) {
-      lastSavedSecRef.current = sec;
-      StorageService.saveProgress(
-        item,
-        status.positionMillis,
-        status.durationMillis || 0
-      );
-    }
-  };
-
-  const handleLoad = async () => {
-    if (item.type === 'movie') {
-      const savedPos = await StorageService.getSavedPosition(item.streamUrl);
-      if (savedPos > 5000) {
-        await videoRef.current?.setPositionAsync(savedPos);
+      // استرجاع الدقيقة المحفوظة للأفلام
+      if (!restoredRef.current && dur > 0 && item.type === 'movie') {
+        restoredRef.current = true;
+        const savedMs = await StorageService.getSavedPosition(item.streamUrl);
+        if (savedMs > 5000) {
+          player.currentTime = savedMs / 1000;
+        }
       }
-    }
-  };
+
+      // الترجمة المتزامنة
+      if (cues.length > 0) {
+        const curMs = cur * 1000;
+        const found = cues.find((c) => curMs >= c.startMs && curMs <= c.endMs);
+        setActiveSubtitle(found ? found.text : '');
+      }
+
+      // حفظ التقدم كل 5 ثواني
+      const wholeSec = Math.floor(cur);
+      if (wholeSec - lastSavedSecRef.current >= 5) {
+        lastSavedSecRef.current = wholeSec;
+        StorageService.saveProgress(item, cur * 1000, dur * 1000);
+      }
+    }, 300);
+
+    return () => clearInterval(timer);
+  }, [player, cues, item]);
 
   const panResponder = useRef(
     PanResponder.create({
@@ -107,12 +112,9 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
             return next;
           });
         } else {
-          setVolume((prev) => {
-            const next = Math.min(1, Math.max(0, prev + delta));
-            videoRef.current?.setVolumeAsync(next).catch(() => {});
-            setGestureText(`الصوت: ${Math.round(next * 100)}%`);
-            return next;
-          });
+          const nextVol = Math.min(1, Math.max(0, (player.volume ?? 1) + delta));
+          player.volume = nextVol;
+          setGestureText(`الصوت: ${Math.round(nextVol * 100)}%`);
         }
       },
       onPanResponderRelease: () => {
@@ -126,8 +128,7 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
     const width = Dimensions.get('window').width;
     if (now - lastTapRef.current.time < 300) {
       const isLeft = x < width / 2;
-      const target = Math.max(0, positionMs + (isLeft ? -10000 : 10000));
-      videoRef.current?.setPositionAsync(target);
+      player.currentTime = Math.max(0, player.currentTime + (isLeft ? -10 : 10));
       setGestureText(isLeft ? '-10 ثواني' : '+10 ثواني');
       setTimeout(() => setGestureText(null), 700);
     } else {
@@ -144,20 +145,22 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
     }
   };
 
-  const cycleResize = () => {
-    setResizeMode((prev) =>
-      prev === ResizeMode.CONTAIN
-        ? ResizeMode.COVER
-        : prev === ResizeMode.COVER
-        ? ResizeMode.STRETCH
-        : ResizeMode.CONTAIN
+  const cycleFit = () => {
+    setContentFit((prev) =>
+      prev === 'contain' ? 'cover' : prev === 'cover' ? 'fill' : 'contain'
     );
   };
 
-  const cycleRate = async () => {
+  const cycleRate = () => {
     const next = rate === 1.0 ? 1.25 : rate === 1.25 ? 1.5 : rate === 1.5 ? 2.0 : 1.0;
     setRate(next);
-    await videoRef.current?.setRateAsync(next, true);
+    player.playbackRate = next;
+  };
+
+  const formatTime = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${String(s).padStart(2, '0')}`;
   };
 
   return (
@@ -166,14 +169,13 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
       {...panResponder.panHandlers}
       onTouchEnd={(e) => handleScreenTap(e.nativeEvent.pageX)}
     >
-      <Video
-        ref={videoRef}
-        source={{ uri: item.streamUrl }}
+      <VideoView
+        ref={videoViewRef}
+        player={player}
         style={styles.video}
-        resizeMode={resizeMode}
-        shouldPlay
-        onLoad={handleLoad}
-        onPlaybackStatusUpdate={handleStatusUpdate}
+        contentFit={contentFit}
+        nativeControls={false}
+        allowsPictureInPicture
       />
 
       {activeSubtitle ? (
@@ -206,10 +208,16 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
             >
               <Text style={styles.btnLabel}>{isFav ? '❤️' : '🤍'}</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={loadSubtitleFile} style={styles.iconBtn}>
-              <Text style={styles.btnLabel}>CC ترجمة</Text>
+            <TouchableOpacity
+              onPress={() => videoViewRef.current?.startPictureInPicture()}
+              style={styles.iconBtn}
+            >
+              <Text style={styles.btnLabel}>PiP</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={cycleResize} style={styles.iconBtn}>
+            <TouchableOpacity onPress={loadSubtitleFile} style={styles.iconBtn}>
+              <Text style={styles.btnLabel}>CC</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={cycleFit} style={styles.iconBtn}>
               <Text style={styles.btnLabel}>الأبعاد</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={cycleRate} style={styles.iconBtn}>
@@ -220,11 +228,7 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
           <View style={styles.centerControls}>
             <TouchableOpacity
               style={styles.playBtn}
-              onPress={() =>
-                isPlaying
-                  ? videoRef.current?.pauseAsync()
-                  : videoRef.current?.playAsync()
-              }
+              onPress={() => (isPlaying ? player.pause() : player.play())}
             >
               <Text style={styles.playBtnText}>
                 {isPlaying ? 'إيقاف ❚❚' : 'تشغيل ▶'}
@@ -232,13 +236,10 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
             </TouchableOpacity>
           </View>
 
-          {durationMs > 0 && (
+          {durationSec > 0 && (
             <View style={styles.bottomBar}>
               <Text style={styles.timeText}>
-                {Math.floor(positionMs / 60000)}:
-                {String(Math.floor((positionMs % 60000) / 1000)).padStart(2, '0')}{' '}
-                / {Math.floor(durationMs / 60000)}:
-                {String(Math.floor((durationMs % 60000) / 1000)).padStart(2, '0')}
+                {formatTime(positionSec)} / {formatTime(durationSec)}
               </Text>
             </View>
           )}
@@ -257,15 +258,15 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: 16,
   },
-  topBar: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  title: { flex: 1, color: '#FFF', fontSize: 16, fontWeight: 'bold' },
+  topBar: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  title: { flex: 1, color: '#FFF', fontSize: 15, fontWeight: 'bold' },
   iconBtn: {
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    paddingHorizontal: 10,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    paddingHorizontal: 9,
     paddingVertical: 6,
     borderRadius: 6,
   },
-  btnLabel: { color: '#FFF', fontWeight: '600', fontSize: 13 },
+  btnLabel: { color: '#FFF', fontWeight: '600', fontSize: 12 },
   centerControls: { alignItems: 'center' },
   playBtn: {
     backgroundColor: '#F59E0B',
@@ -289,7 +290,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 45,
     alignSelf: 'center',
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0,0,0,0.75)',
     paddingHorizontal: 12,
     paddingVertical: 4,
     borderRadius: 6,
