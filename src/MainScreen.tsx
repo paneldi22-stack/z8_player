@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -11,11 +11,69 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import { AppLang, TRANSLATIONS } from './i18n';
-import { EpgProgram, MediaItem, WatchProgress } from './types';
+import { fetchSeriesEpisodes } from './iptv';
+import {
+  EpgProgram,
+  MediaItem,
+  PlaylistSource,
+  WatchProgress,
+} from './types';
+
+const MiniLivePreview: React.FC<{
+  item: MediaItem;
+  epgTitle?: string;
+  noProgramLabel: string;
+  fullscreenLabel: string;
+  onFullscreen: () => void;
+}> = ({ item, epgTitle, noProgramLabel, fullscreenLabel, onFullscreen }) => {
+  const player = useVideoPlayer(
+    { uri: item.streamUrl, headers: { 'User-Agent': 'IPTVSmartersPlayer' } },
+    (p) => {
+      p.loop = false;
+      p.play();
+    }
+  );
+
+  useEffect(() => {
+    player.replace({
+      uri: item.streamUrl,
+      headers: { 'User-Agent': 'IPTVSmartersPlayer' },
+    });
+    player.play();
+  }, [item.streamUrl, player]);
+
+  return (
+    <View style={styles.rightPane}>
+      <TouchableOpacity style={styles.miniVideoBox} onPress={onFullscreen}>
+        <VideoView
+          player={player}
+          style={{ width: '100%', height: '100%' }}
+          contentFit="contain"
+          nativeControls={false}
+        />
+        <View style={styles.miniBar}>
+          <Text style={styles.miniTitle} numberOfLines={1}>
+            {item.name}
+          </Text>
+          <View style={styles.fsBadge}>
+            <Text style={styles.fsBadgeText}>{fullscreenLabel}</Text>
+          </View>
+        </View>
+      </TouchableOpacity>
+
+      <View style={styles.epgBox}>
+        <Text style={styles.epgIcon}>📅</Text>
+        <Text style={styles.epgText}>{epgTitle || noProgramLabel}</Text>
+      </View>
+    </View>
+  );
+};
 
 interface Props {
   title: string;
+  source: PlaylistSource | null;
   lang: AppLang;
   items: MediaItem[];
   epgMap: Record<string, EpgProgram>;
@@ -24,7 +82,7 @@ interface Props {
   lockedCats: string[];
   loading: boolean;
   onChangeLang: (l: AppLang) => void;
-  onSelectItem: (item: MediaItem) => void;
+  onPlayItem: (item: MediaItem, list: MediaItem[]) => void;
   onOpenMultiScreen: () => void;
   onOpenServer: () => void;
   onRefresh: () => void;
@@ -34,6 +92,7 @@ interface Props {
 
 export const MainScreen: React.FC<Props> = ({
   title,
+  source,
   lang,
   items,
   epgMap,
@@ -42,7 +101,7 @@ export const MainScreen: React.FC<Props> = ({
   lockedCats,
   loading,
   onChangeLang,
-  onSelectItem,
+  onPlayItem,
   onOpenMultiScreen,
   onOpenServer,
   onRefresh,
@@ -50,208 +109,209 @@ export const MainScreen: React.FC<Props> = ({
   onToggleLockCat,
 }) => {
   const t = TRANSLATIONS[lang];
-  const [tab, setTab] = useState<'live' | 'movie' | 'fav' | 'settings'>('live');
-  const [selectedCat, setSelectedCat] = useState('All');
+  const [section, setSection] = useState<'live' | 'movie' | 'series' | 'settings'>('live');
+  const [selectedCat, setSelectedCat] = useState<string>('');
+  const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState('');
 
-  const currentTypeItems =
-    tab === 'live' || tab === 'movie'
-      ? items.filter((x) => x.type === tab)
-      : [];
-  const categories = [
-    'All',
-    ...Array.from(new Set(currentTypeItems.map((x) => x.category))),
-  ];
-  const filteredItems = currentTypeItems.filter((x) => {
-    const matchCat = selectedCat === 'All' || x.category === selectedCat;
-    const matchSearch =
-      !search || x.name.toLowerCase().includes(search.toLowerCase());
-    return matchCat && matchSearch;
-  });
-  const allCategories = Array.from(new Set(items.map((x) => x.category)));
+  const [previewItem, setPreviewItem] = useState<MediaItem | null>(null);
+  const [selectedSeries, setSelectedSeries] = useState<MediaItem | null>(null);
+  const [episodesMap, setEpisodesMap] = useState<Record<string, MediaItem[]>>({});
+  const [activeSeason, setActiveSeason] = useState<string>('');
+  const [loadingEpisodes, setLoadingEpisodes] = useState(false);
+
+  const sectionItems = useMemo(
+    () => (section === 'settings' ? [] : items.filter((x) => x.type === section)),
+    [items, section]
+  );
+
+  // تجميع كل حزمة/باقة مع عدد العناصر الموجودة بداخلها فقط
+  const packages = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const it of sectionItems) {
+      counts[it.category] = (counts[it.category] || 0) + 1;
+    }
+    const list = Object.keys(counts).map((cat) => ({
+      name: cat,
+      total: counts[cat],
+      isFav: false,
+    }));
+    const favCount = favorites.filter((f) => f.type === section).length;
+    return [{ name: t.myFavorites, total: favCount, isFav: true }, ...list];
+  }, [sectionItems, favorites, section, t.myFavorites]);
+
+  useEffect(() => {
+    if (packages.length > 1) {
+      setSelectedCat(packages[1].name);
+    } else if (packages.length === 1) {
+      setSelectedCat(packages[0].name);
+    }
+    setSelectedSeries(null);
+    setEpisodesMap({});
+  }, [section, items]);
+
+  const displayedItems = useMemo(() => {
+    const isFavCat = selectedCat === t.myFavorites;
+    const base = isFavCat
+      ? favorites.filter((f) => f.type === section)
+      : sectionItems.filter((x) => x.category === selectedCat);
+    if (!search.trim()) return base;
+    return base.filter((x) =>
+      x.name.toLowerCase().includes(search.toLowerCase())
+    );
+  }, [selectedCat, t.myFavorites, favorites, section, sectionItems, search]);
+
+  useEffect(() => {
+    if (section === 'live' && displayedItems.length > 0) {
+      if (!previewItem || previewItem.category !== selectedCat) {
+        setPreviewItem(displayedItems[0]);
+      }
+    }
+  }, [section, selectedCat, displayedItems]);
+
+  const handleItemPress = async (item: MediaItem) => {
+    if (section === 'live') {
+      if (previewItem?.id === item.id) {
+        onPlayItem(item, displayedItems);
+      } else {
+        setPreviewItem(item);
+      }
+      return;
+    }
+
+    if (section === 'movie') {
+      if (previewItem?.id === item.id) {
+        onPlayItem(item, displayedItems);
+      } else {
+        setPreviewItem(item);
+      }
+      return;
+    }
+
+    // المسلسلات
+    if (item.streamUrl) {
+      onPlayItem(item, displayedItems);
+      return;
+    }
+    setSelectedSeries(item);
+    if (source?.server && source.username && source.password && item.seriesId) {
+      setLoadingEpisodes(true);
+      const map = await fetchSeriesEpisodes(
+        source.server,
+        source.username,
+        source.password,
+        item
+      );
+      setEpisodesMap(map);
+      const seasons = Object.keys(map);
+      setActiveSeason(seasons[0] || '');
+      setLoadingEpisodes(false);
+    }
+  };
+
+  const allCategories = useMemo(
+    () => Array.from(new Set(items.map((x) => x.category))),
+    [items]
+  );
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>{title}</Text>
+      {/* عمود 1: شريط الأيقونات الجانبي مثل Hot Player */}
+      <View style={styles.iconRail}>
+        <Text style={styles.brandBadge}>Z8</Text>
 
-        <View style={styles.navInline}>
-          {[
-            { key: 'live', label: t.live },
-            { key: 'movie', label: t.movies },
-            { key: 'fav', label: t.favorites },
-            { key: 'settings', label: t.settings },
-          ].map((nav) => (
-            <TouchableOpacity
-              key={nav.key}
-              style={[styles.navPill, tab === nav.key && styles.navPillActive]}
-              onPress={() => {
-                setTab(nav.key as any);
-                setSelectedCat('All');
-              }}
-            >
-              <Text
-                style={[
-                  styles.navPillText,
-                  tab === nav.key && { color: '#000', fontWeight: 'bold' },
-                ]}
-              >
-                {nav.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        {[
+          { key: 'live', icon: '📺', label: t.live },
+          { key: 'movie', icon: '🎬', label: t.movies },
+          { key: 'series', icon: '🎞️', label: t.series },
+        ].map((nav) => (
+          <TouchableOpacity
+            key={nav.key}
+            style={[styles.railBtn, section === nav.key && styles.railBtnActive]}
+            onPress={() => setSection(nav.key as any)}
+          >
+            <Text style={styles.railIcon}>{nav.icon}</Text>
+          </TouchableOpacity>
+        ))}
 
-        <View style={styles.headerActions}>
-          <TouchableOpacity style={styles.topBtn} onPress={onOpenMultiScreen}>
-            <Text style={styles.topBtnText}>{t.multiScreen}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.topBtn} onPress={onOpenServer}>
-            <Text style={styles.topBtnText}>{t.server}</Text>
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity
+          style={styles.railBtn}
+          onPress={() => setSelectedCat(t.myFavorites)}
+        >
+          <Text style={styles.railIcon}>❤️</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.railBtn} onPress={onOpenMultiScreen}>
+          <Text style={styles.railIcon}>⊞</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.railBtn, searchOpen && styles.railBtnActive]}
+          onPress={() => {
+            setSearchOpen((s) => !s);
+            setSearch('');
+          }}
+        >
+          <Text style={styles.railIcon}>🔍</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.railBtn} onPress={onRefresh}>
+          <Text style={styles.railIcon}>🔄</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.railBtn} onPress={onOpenServer}>
+          <Text style={styles.railIcon}>🌐</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.railBtn, section === 'settings' && styles.railBtnActive]}
+          onPress={() => setSection('settings')}
+        >
+          <Text style={styles.railIcon}>⚙️</Text>
+        </TouchableOpacity>
       </View>
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#F59E0B" />
+          <ActivityIndicator size="large" color="#C8E64C" />
           <Text style={styles.loadingText}>{t.loadingPlaylist}</Text>
         </View>
-      ) : tab === 'live' || tab === 'movie' ? (
-        <View style={{ flex: 1 }}>
-          <View style={styles.filterBar}>
-            <TextInput
-              style={styles.searchInput}
-              placeholder={t.searchPlaceholder}
-              placeholderTextColor="#888"
-              value={search}
-              onChangeText={setSearch}
-            />
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={{ flex: 1 }}
-            >
-              {categories.map((cat) => (
-                <TouchableOpacity
-                  key={cat}
-                  style={[
-                    styles.chip,
-                    selectedCat === cat && styles.activeChip,
-                  ]}
-                  onPress={() => setSelectedCat(cat)}
-                >
-                  <Text
-                    style={[
-                      styles.chipText,
-                      selectedCat === cat && styles.activeChipText,
-                    ]}
-                  >
-                    {cat === 'All' ? t.all : cat}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-
-          <FlatList
-            data={filteredItems}
-            numColumns={2}
-            keyExtractor={(item) => item.id}
-            initialNumToRender={20}
-            maxToRenderPerBatch={20}
-            windowSize={10}
-            removeClippedSubviews
-            contentContainerStyle={{ paddingHorizontal: 6, paddingBottom: 12 }}
-            renderItem={({ item }) => {
-              const epg = epgMap[item.epgId]?.title;
-              const isLocked = lockedCats.includes(item.category);
-              return (
-                <TouchableOpacity
-                  style={styles.card}
-                  onPress={() => onSelectItem(item)}
-                >
-                  <Text style={styles.cardIcon}>
-                    {isLocked ? '🔒' : tab === 'live' ? '📺' : '🎬'}
-                  </Text>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.cardTitle} numberOfLines={1}>
-                      {item.name}
-                    </Text>
-                    <Text style={styles.cardSub} numberOfLines={1}>
-                      {epg ? `${t.nowPlaying} ${epg}` : item.category}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              );
-            }}
-          />
-        </View>
-      ) : tab === 'fav' ? (
-        <ScrollView style={{ padding: 16 }}>
-          <Text style={styles.sectionTitle}>{t.continueWatching}</Text>
-          {history.map((h) => (
-            <TouchableOpacity
-              key={h.item.streamUrl}
-              style={styles.cardFull}
-              onPress={() => onSelectItem(h.item)}
-            >
-              <Text style={styles.cardTitle}>{h.item.name}</Text>
-            </TouchableOpacity>
-          ))}
-
-          <Text style={[styles.sectionTitle, { marginTop: 20 }]}>
-            {t.myFavorites}
-          </Text>
-          {favorites.map((f) => (
-            <TouchableOpacity
-              key={f.streamUrl}
-              style={styles.cardFull}
-              onPress={() => onSelectItem(f)}
-            >
-              <Text style={styles.cardTitle}>❤️ {f.name}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      ) : (
-        <ScrollView style={{ padding: 16 }}>
+      ) : section === 'settings' ? (
+        <ScrollView style={{ flex: 1, padding: 18 }}>
           <Text style={styles.sectionTitle}>{t.languageLabel}</Text>
-          <View style={styles.langSelector}>
+          <View style={styles.rowGap}>
             {[
               { code: 'ar', label: 'العربية' },
               { code: 'fr', label: 'Français' },
               { code: 'en', label: 'English' },
-            ].map((item) => (
+            ].map((l) => (
               <TouchableOpacity
-                key={item.code}
-                style={[
-                  styles.langOption,
-                  lang === item.code && styles.langOptionActive,
-                ]}
-                onPress={() => onChangeLang(item.code as AppLang)}
+                key={l.code}
+                style={[styles.pillBtn, lang === l.code && styles.pillActive]}
+                onPress={() => onChangeLang(l.code as AppLang)}
               >
                 <Text
                   style={[
-                    styles.langOptionText,
-                    lang === item.code && { color: '#000', fontWeight: 'bold' },
+                    styles.pillText,
+                    lang === l.code && { color: '#0B132B', fontWeight: 'bold' },
                   ]}
                 >
-                  {item.label}
+                  {l.label}
                 </Text>
               </TouchableOpacity>
             ))}
           </View>
 
-          <View style={styles.settingsActions}>
-            <TouchableOpacity style={styles.actionBtn} onPress={onRefresh}>
-              <Text style={styles.actionBtnText}>{t.refreshPlaylist}</Text>
+          <View style={[styles.rowGap, { marginTop: 12 }]}>
+            <TouchableOpacity style={styles.pillBtn} onPress={onRefresh}>
+              <Text style={styles.pillText}>{t.refreshPlaylist}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.actionBtn} onPress={onOpenSetPin}>
-              <Text style={styles.actionBtnText}>{t.setPin}</Text>
+            <TouchableOpacity style={styles.pillBtn} onPress={onOpenSetPin}>
+              <Text style={styles.pillText}>{t.setPin}</Text>
             </TouchableOpacity>
           </View>
 
-          <Text style={[styles.sectionTitle, { marginTop: 14 }]}>
+          <Text style={[styles.sectionTitle, { marginTop: 18 }]}>
             {t.lockCategories}
           </Text>
           {allCategories.map((cat) => (
@@ -264,119 +324,384 @@ export const MainScreen: React.FC<Props> = ({
             </View>
           ))}
         </ScrollView>
+      ) : (
+        <View style={styles.columnsWrap}>
+          {/* عمود 2: الحزم والباقات مع Total */}
+          <View style={styles.catCol}>
+            <View style={styles.colHeader}>
+              <Text style={styles.headerBrand}>{title}</Text>
+            </View>
+            <FlatList
+              data={packages}
+              keyExtractor={(p) => p.name}
+              renderItem={({ item: pkg }) => {
+                const active = selectedCat === pkg.name;
+                return (
+                  <TouchableOpacity
+                    style={[styles.catCard, active && styles.activeLimeCard]}
+                    onPress={() => setSelectedCat(pkg.name)}
+                  >
+                    <Text
+                      style={[
+                        styles.catTitle,
+                        active && { color: '#0B132B', fontWeight: 'bold' },
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {pkg.name}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.catTotal,
+                        active && { color: '#1E293B' },
+                      ]}
+                    >
+                      {t.total}: {pkg.total}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+
+          {/* عمود 3: القنوات أو الأفلام أو المسلسلات داخل الحزمة المختارة */}
+          <View style={styles.listCol}>
+            <View style={styles.colHeader}>
+              {searchOpen ? (
+                <TextInput
+                  style={styles.searchBox}
+                  placeholder={t.searchPlaceholder}
+                  placeholderTextColor="#94A3B8"
+                  value={search}
+                  onChangeText={setSearch}
+                />
+              ) : (
+                <Text style={styles.colHeaderTitle} numberOfLines={1}>
+                  {selectedCat}
+                </Text>
+              )}
+            </View>
+
+            <FlatList
+              data={displayedItems}
+              keyExtractor={(it) => it.id}
+              initialNumToRender={20}
+              maxToRenderPerBatch={20}
+              renderItem={({ item }) => {
+                const isSelected =
+                  section === 'series'
+                    ? selectedSeries?.id === item.id
+                    : previewItem?.id === item.id;
+                const isLocked = lockedCats.includes(item.category);
+                return (
+                  <TouchableOpacity
+                    style={[
+                      styles.itemRow,
+                      isSelected && styles.activeLimeCard,
+                    ]}
+                    onPress={() => handleItemPress(item)}
+                  >
+                    <Text style={styles.itemIcon}>
+                      {isLocked
+                        ? '🔒'
+                        : section === 'live'
+                        ? '📺'
+                        : section === 'movie'
+                        ? '🎬'
+                        : '🎞️'}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.itemName,
+                        isSelected && { color: '#0B132B', fontWeight: 'bold' },
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {item.name}
+                    </Text>
+                    {item.num !== undefined && (
+                      <View style={styles.numBadge}>
+                        <Text style={styles.numText}>{item.num}</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+
+          {/* عمود 4: شاشة المعاينة و EPG أو تفاصيل الفيلم/المسلسل */}
+          {section === 'live' && previewItem ? (
+            <MiniLivePreview
+              item={previewItem}
+              epgTitle={epgMap[previewItem.epgId]?.title}
+              noProgramLabel={t.noProgram}
+              fullscreenLabel={t.fullscreen}
+              onFullscreen={() => onPlayItem(previewItem, displayedItems)}
+            />
+          ) : section === 'movie' ? (
+            <View style={styles.rightPane}>
+              {previewItem ? (
+                <View style={styles.infoBox}>
+                  <Text style={styles.infoTitle}>{previewItem.name}</Text>
+                  <Text style={styles.infoCat}>{previewItem.category}</Text>
+                  {previewItem.rating ? (
+                    <Text style={styles.ratingText}>⭐ {previewItem.rating}</Text>
+                  ) : null}
+                  <TouchableOpacity
+                    style={styles.watchBtn}
+                    onPress={() => onPlayItem(previewItem, displayedItems)}
+                  >
+                    <Text style={styles.watchBtnText}>{t.watchNow}</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+            </View>
+          ) : (
+            <View style={styles.rightPane}>
+              {loadingEpisodes ? (
+                <ActivityIndicator size="large" color="#C8E64C" />
+              ) : selectedSeries ? (
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.infoTitle} numberOfLines={1}>
+                    {selectedSeries.name}
+                  </Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    style={{ maxHeight: 40, marginVertical: 8 }}
+                  >
+                    {Object.keys(episodesMap).map((s) => (
+                      <TouchableOpacity
+                        key={s}
+                        style={[
+                          styles.seasonChip,
+                          activeSeason === s && styles.activeLimeCard,
+                        ]}
+                        onPress={() => setActiveSeason(s)}
+                      >
+                        <Text
+                          style={[
+                            styles.seasonText,
+                            activeSeason === s && { color: '#0B132B', fontWeight: 'bold' },
+                          ]}
+                        >
+                          {t.season} {s}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                  <FlatList
+                    data={episodesMap[activeSeason] || []}
+                    keyExtractor={(ep) => ep.id}
+                    renderItem={({ item: ep }) => (
+                      <TouchableOpacity
+                        style={styles.epRow}
+                        onPress={() =>
+                          onPlayItem(ep, episodesMap[activeSeason] || [])
+                        }
+                      >
+                        <Text style={styles.epName} numberOfLines={1}>
+                          ▶ {ep.name}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  />
+                </View>
+              ) : (
+                <View style={styles.epgBox}>
+                  <Text style={styles.epgText}>{t.selectSeriesHint}</Text>
+                </View>
+              )}
+            </View>
+          )}
+        </View>
       )}
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0E1117' },
+  container: { flex: 1, flexDirection: 'row', backgroundColor: '#0B132B' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   loadingText: { color: '#FFF', marginTop: 12 },
-  header: {
-    flexDirection: 'row',
+  iconRail: {
+    width: 52,
+    backgroundColor: '#080E21',
+    alignItems: 'center',
+    paddingVertical: 8,
+    gap: 6,
+    borderRightWidth: 1,
+    borderColor: '#1E3A8A',
+  },
+  brandBadge: {
+    color: '#C8E64C',
+    fontWeight: 'bold',
+    fontSize: 16,
+    marginBottom: 4,
+  },
+  railBtn: {
+    width: 38,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#162447',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  railBtnActive: { backgroundColor: '#C8E64C' },
+  railIcon: { fontSize: 16 },
+  columnsWrap: { flex: 1, flexDirection: 'row' },
+  catCol: {
+    width: '26%',
+    backgroundColor: '#0E1836',
+    borderRightWidth: 1,
+    borderColor: '#1E3A8A',
+  },
+  listCol: {
+    width: '36%',
+    backgroundColor: '#0B132B',
+    borderRightWidth: 1,
+    borderColor: '#1E3A8A',
+  },
+  rightPane: {
+    flex: 1,
+    backgroundColor: '#0B132B',
+    padding: 10,
     justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: '#161B22',
-    gap: 10,
   },
-  headerTitle: { color: '#F59E0B', fontSize: 17, fontWeight: 'bold' },
-  navInline: { flexDirection: 'row', gap: 6 },
-  navPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: '#21262D',
-  },
-  navPillActive: { backgroundColor: '#F59E0B' },
-  navPillText: { color: '#CCC', fontSize: 12 },
-  headerActions: { flexDirection: 'row', gap: 6 },
-  topBtn: {
-    backgroundColor: '#21262D',
+  colHeader: {
+    height: 40,
+    backgroundColor: '#162447',
+    justifyContent: 'center',
     paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 6,
   },
-  topBtnText: { color: '#FFF', fontSize: 12 },
-  filterBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  headerBrand: { color: '#38BDF8', fontWeight: 'bold', fontSize: 15 },
+  colHeaderTitle: { color: '#C8E64C', fontWeight: 'bold', fontSize: 13 },
+  searchBox: {
+    backgroundColor: '#0B132B',
+    color: '#FFF',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    fontSize: 12,
+  },
+  catCard: {
     paddingHorizontal: 10,
     paddingVertical: 8,
-    gap: 8,
+    borderBottomWidth: 1,
+    borderColor: '#162447',
   },
-  searchInput: {
-    backgroundColor: '#1A1F29',
-    color: '#FFF',
-    width: 210,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+  catTitle: { color: '#FFF', fontSize: 12, fontWeight: '600' },
+  catTotal: { color: '#94A3B8', fontSize: 10, marginTop: 2 },
+  activeLimeCard: { backgroundColor: '#C8E64C' },
+  itemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#162447',
+    marginHorizontal: 6,
+    marginVertical: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderRadius: 6,
+    gap: 6,
+  },
+  itemIcon: { fontSize: 14 },
+  itemName: { flex: 1, color: '#FFF', fontSize: 12 },
+  numBadge: {
+    backgroundColor: '#22D3EE',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  numText: { color: '#0B132B', fontSize: 10, fontWeight: 'bold' },
+  miniVideoBox: {
+    height: '56%',
+    backgroundColor: '#000',
     borderRadius: 8,
-    fontSize: 13,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#1E3A8A',
   },
-  chip: {
-    backgroundColor: '#1F242D',
+  miniBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(14,116,144,0.88)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  miniTitle: { flex: 1, color: '#FFF', fontSize: 12, fontWeight: 'bold' },
+  fsBadge: {
+    backgroundColor: '#C8E64C',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  fsBadgeText: { color: '#0B132B', fontSize: 10, fontWeight: 'bold' },
+  epgBox: {
+    flex: 1,
+    marginTop: 8,
+    backgroundColor: '#0E1836',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 12,
+  },
+  epgIcon: { fontSize: 28, marginBottom: 6 },
+  epgText: { color: '#CBD5E1', fontSize: 13, textAlign: 'center' },
+  infoBox: {
+    flex: 1,
+    backgroundColor: '#0E1836',
+    borderRadius: 10,
+    padding: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  infoTitle: { color: '#FFF', fontSize: 16, fontWeight: 'bold', textAlign: 'center' },
+  infoCat: { color: '#38BDF8', fontSize: 12, marginTop: 4 },
+  ratingText: { color: '#C8E64C', fontSize: 14, marginTop: 6 },
+  watchBtn: {
+    marginTop: 16,
+    backgroundColor: '#C8E64C',
+    paddingHorizontal: 22,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  watchBtnText: { color: '#0B132B', fontWeight: 'bold', fontSize: 14 },
+  seasonChip: {
+    backgroundColor: '#162447',
     paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 18,
-    marginHorizontal: 3,
+    paddingVertical: 6,
+    borderRadius: 14,
+    marginRight: 6,
   },
-  activeChip: { backgroundColor: '#F59E0B' },
-  chipText: { color: '#CCC', fontSize: 12 },
-  activeChipText: { color: '#000', fontWeight: 'bold' },
-  card: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#161B22',
-    margin: 4,
+  seasonText: { color: '#FFF', fontSize: 12 },
+  epRow: {
+    backgroundColor: '#162447',
     padding: 10,
-    borderRadius: 8,
-    gap: 10,
+    borderRadius: 6,
+    marginBottom: 6,
   },
-  cardFull: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#161B22',
-    marginVertical: 4,
-    padding: 12,
-    borderRadius: 8,
-  },
-  cardIcon: { fontSize: 18 },
-  cardTitle: { color: '#FFF', fontSize: 14, fontWeight: '600' },
-  cardSub: { color: '#9CA3AF', fontSize: 11, marginTop: 2 },
-  sectionTitle: {
-    color: '#F59E0B',
-    fontSize: 15,
-    fontWeight: 'bold',
-    marginBottom: 8,
-  },
-  langSelector: { flexDirection: 'row', gap: 10, marginBottom: 14 },
-  langOption: {
+  epName: { color: '#FFF', fontSize: 12 },
+  sectionTitle: { color: '#C8E64C', fontSize: 15, fontWeight: 'bold', marginBottom: 8 },
+  rowGap: { flexDirection: 'row', gap: 10 },
+  pillBtn: {
     flex: 1,
-    backgroundColor: '#1F242D',
+    backgroundColor: '#162447',
     padding: 12,
     borderRadius: 8,
     alignItems: 'center',
   },
-  langOptionActive: { backgroundColor: '#F59E0B' },
-  langOptionText: { color: '#FFF', fontWeight: '600' },
-  settingsActions: { flexDirection: 'row', gap: 10 },
-  actionBtn: {
-    flex: 1,
-    backgroundColor: '#1F242D',
-    padding: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  actionBtnText: { color: '#F59E0B', fontWeight: 'bold', fontSize: 13 },
+  pillActive: { backgroundColor: '#C8E64C' },
+  pillText: { color: '#FFF', fontWeight: '600' },
   switchRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderColor: '#1F242D',
+    borderColor: '#162447',
   },
 });
