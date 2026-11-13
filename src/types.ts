@@ -1,13 +1,28 @@
-export type MediaType = 'live' | 'movie';
+export type MediaType = 'live' | 'movie' | 'series';
 
 export interface MediaItem {
   id: string;
+  num?: number;
   name: string;
   streamUrl: string;
   logoUrl: string;
   category: string;
   epgId: string;
   type: MediaType;
+  seriesId?: string;
+  rating?: string;
+  plot?: string;
+}
+
+export interface PlaylistSource {
+  type: 'xtream' | 'm3u' | 'file';
+  name: string;
+  server?: string;
+  username?: string;
+  password?: string;
+  m3uUrl?: string;
+  fileContent?: string;
+  epgUrl?: string;
 }
 
 export interface EpgProgram {
@@ -19,20 +34,9 @@ export interface EpgProgram {
 
 export interface WatchProgress {
   item: MediaItem;
-  positionMillis: number;
-  durationMillis: number;
-}
-
-export interface ActiveSource {
-  type: 'xtream' | 'm3u' | 'file';
-  name: string;
-  server?: string;
-  username?: string;
-  password?: string;
-  m3uUrl?: string;
-  fileContent?: string;
-  fileName?: string;
-  epgUrl?: string;
+  positionMs: number;
+  durationMs: number;
+  updatedAt: number;
 }
 
 export interface SubtitleCue {
