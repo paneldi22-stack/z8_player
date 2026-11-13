@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -50,44 +50,10 @@ export default function App() {
   const [pendingItem, setPendingItem] = useState<MediaItem | null>(null);
   const [settingNewPin, setSettingNewPin] = useState(false);
 
-  useEffect(() => {
-    initApp();
+  const handleIntroFinish = useCallback(() => {
+    setShowIntro(false);
   }, []);
 
-  const initApp = async () => {
-    const src = await StorageService.getSource();
-    if (!src) {
-      setHasSource(false);
-      return;
-    }
-    setHasSource(true);
-    setTitle(src.name);
-    await refreshUserData();
-    await loadPlaylist();
-  };
-
-  const refreshUserData = async () => {
-    const [favs, hist, locks] = await Promise.all([
-      StorageService.getFavorites(),
-      StorageService.getHistory(),
-      StorageService.getLockedCategories(),
-    ]);
-    setFavorites(favs);
-    setHistory(hist);
-    setLockedCats(locks);
-  };
-
-  const loadPlaylist = async () => {
-    const src = await StorageService.getSource();
-    if (!src) return;
-    setLoading(true);
-    try {
-      let loaded: MediaItem[] = [];
-      if (src.type === 'xtream' && src.server && src.username && src.password) {
-        loaded = await fetchXtreamAccount(src.server, src.username, src.password);
-      } else if (src.type === 'file' && src.fileContent) {
-        loaded = parseM3uContent(src.fileContent);
-      } else if (src.m3uUrl) {
-        loaded = await fetchM3uUrl(src.m3uUrl);
-      }
-      const epg = await fetchEpgMap(src.epgUrl
+  useEffect(() => {
+    initApp();
+  
