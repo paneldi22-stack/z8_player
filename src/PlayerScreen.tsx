@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  BackHandler,
   Dimensions,
   PanResponder,
   StyleSheet,
@@ -22,13 +24,21 @@ interface Props {
 
 export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
   const videoViewRef = useRef<VideoView>(null);
-  const player = useVideoPlayer(item.streamUrl, (p) => {
-    p.loop = false;
-    p.play();
-  });
+  const player = useVideoPlayer(
+    {
+      uri: item.streamUrl,
+      headers: { 'User-Agent': 'IPTVSmartersPlayer' },
+    },
+    (p) => {
+      p.loop = false;
+      p.play();
+    }
+  );
 
   const [showControls, setShowControls] = useState(true);
   const [isPlaying, setIsPlaying] = useState(true);
+  const [isBuffering, setIsBuffering] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isFav, setIsFav] = useState(false);
   const [contentFit, setContentFit] = useState<VideoContentFit>('contain');
   const [rate, setRate] = useState(1.0);
@@ -53,12 +63,34 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
       .then(setBrightness)
       .catch(() => {});
 
+    const backSub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+
+    const statusSub = player.addListener('statusChange', ({ status, error }) => {
+      if (status === 'loading') {
+        setIsBuffering(true);
+        setErrorMsg(null);
+      } else if (status === 'readyToPlay') {
+        setIsBuffering(false);
+        setErrorMsg(null);
+      } else if (status === 'error') {
+        setIsBuffering(false);
+        setErrorMsg(
+          error?.message || 'تعذر تشغيل البث (قد يكون السيرفر متوقف أو بطيء)'
+        );
+      }
+    });
+
     return () => {
+      backSub.remove();
+      statusSub.remove();
       ScreenOrientation.lockAsync(
         ScreenOrientation.OrientationLock.PORTRAIT_UP
       ).catch(() => {});
     };
-  }, [item]);
+  }, [item, onClose, player]);
 
   useEffect(() => {
     const timer = setInterval(async () => {
@@ -174,6 +206,32 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
         allowsPictureInPicture
       />
 
+      {isBuffering && !errorMsg && (
+        <View style={styles.centerStatus}>
+          <ActivityIndicator size="large" color="#F59E0B" />
+        </View>
+      )}
+
+      {errorMsg && (
+        <View style={styles.centerStatus}>
+          <Text style={styles.errorText}>{errorMsg}</Text>
+          <TouchableOpacity
+            style={styles.retryBtn}
+            onPress={() => {
+              setErrorMsg(null);
+              setIsBuffering(true);
+              player.replace({
+                uri: item.streamUrl,
+                headers: { 'User-Agent': 'IPTVSmartersPlayer' },
+              });
+              player.play();
+            }}
+          >
+            <Text style={styles.retryText}>إعادة المحاولة</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {activeSubtitle ? (
         <View style={styles.subBox}>
           <Text style={styles.subText}>{activeSubtitle}</Text>
@@ -248,6 +306,23 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000', justifyContent: 'center' },
   video: { width: '100%', height: '100%' },
+  centerStatus: {
+    position: 'absolute',
+    alignSelf: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    padding: 18,
+    borderRadius: 12,
+    maxWidth: '80%',
+  },
+  errorText: { color: '#EF4444', textAlign: 'center', marginBottom: 12 },
+  retryBtn: {
+    backgroundColor: '#F59E0B',
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  retryText: { color: '#000', fontWeight: 'bold' },
   overlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.4)',
