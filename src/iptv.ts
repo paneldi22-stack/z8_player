@@ -1,5 +1,32 @@
 import { EpgProgram, MediaItem, SubtitleCue } from './types';
 
+const IPTV_HEADERS = {
+  'User-Agent': 'IPTVSmartersPlayer',
+  Accept: '*/*',
+};
+
+function extractXtreamFromM3uUrl(
+  url: string
+): { server: string; username: string; password: string } | null {
+  if (!url.toLowerCase().includes('get.php')) return null;
+  const [base, query] = url.split('?');
+  if (!query) return null;
+  const server = base.replace(/\/get\.php$/i, '');
+  const params: Record<string, string> = {};
+  for (const part of query.split('&')) {
+    const idx = part.indexOf('=');
+    if (idx !== -1) {
+      const k = part.slice(0, idx).toLowerCase();
+      const v = part.slice(idx + 1);
+      params[k] = decodeURIComponent(v);
+    }
+  }
+  if (params.username && params.password) {
+    return { server, username: params.username, password: params.password };
+  }
+  return null;
+}
+
 export function parseM3uContent(content: string): MediaItem[] {
   const lines = content.split(/\r?\n/);
   const items: MediaItem[] = [];
@@ -9,7 +36,7 @@ export function parseM3uContent(content: string): MediaItem[] {
   let currentGroup = 'General';
   let currentEpgId = '';
 
-  for (let rawLine of lines) {
+  for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
 
@@ -43,10 +70,25 @@ export function parseM3uContent(content: string): MediaItem[] {
 }
 
 export async function fetchM3uUrl(url: string): Promise<MediaItem[]> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`فشل تحميل القائمة (${res.status})`);
-  const text = await res.text();
-  return parseM3uContent(text);
+  try {
+    const res = await fetch(url, { headers: IPTV_HEADERS });
+    if (!res.ok) {
+      throw new Error(`فشل تحميل القائمة (${res.status})`);
+    }
+    const text = await res.text();
+    const parsed = parseM3uContent(text);
+    if (parsed.length === 0) {
+      throw new Error('القائمة فارغة أو الرابط غير صالح');
+    }
+    return parsed;
+  } catch (err) {
+    // إذا كان الرابط get.php وعطى 504 أو تعطل، نبدلو تلقائياً لـ Xtream API الأسرع
+    const xtream = extractXtreamFromM3uUrl(url);
+    if (xtream) {
+      return fetchXtreamAccount(xtream.server, xtream.username, xtream.password);
+    }
+    throw err;
+  }
 }
 
 export async function fetchXtreamAccount(
@@ -60,7 +102,7 @@ export async function fetchXtreamAccount(
     const url = `${cleanServer}/player_api.php?username=${encodeURIComponent(
       username
     )}&password=${encodeURIComponent(password)}&action=${action}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: IPTV_HEADERS });
     if (!res.ok) throw new Error(`خطأ في السيرفر (${res.status})`);
     return res.json();
   };
@@ -82,7 +124,7 @@ export async function fetchXtreamAccount(
   const liveItems: MediaItem[] = (liveRaw || []).map((item: any) => {
     const id = String(item.stream_id);
     return {
-      id,
+      id: `live_${id}`,
       name: String(item.name || 'Channel'),
       streamUrl: `${cleanServer}/live/${username}/${password}/${id}.m3u8`,
       logoUrl: String(item.stream_icon || ''),
@@ -96,7 +138,7 @@ export async function fetchXtreamAccount(
     const id = String(item.stream_id);
     const ext = item.container_extension || 'mp4';
     return {
-      id,
+      id: `vod_${id}`,
       name: String(item.name || 'Movie'),
       streamUrl: `${cleanServer}/movie/${username}/${password}/${id}.${ext}`,
       logoUrl: String(item.stream_icon || ''),
@@ -126,7 +168,7 @@ export async function fetchEpgMap(
 ): Promise<Record<string, EpgProgram>> {
   if (!xmltvUrl) return {};
   try {
-    const res = await fetch(xmltvUrl);
+    const res = await fetch(xmltvUrl, { headers: IPTV_HEADERS });
     if (!res.ok) return {};
     const xml = await res.text();
     const now = Date.now();
