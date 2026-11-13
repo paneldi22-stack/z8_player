@@ -13,16 +13,19 @@ import { useVideoPlayer, VideoContentFit, VideoView } from 'expo-video';
 import * as Brightness from 'expo-brightness';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ScreenOrientation from 'expo-screen-orientation';
+import { AppLang, TRANSLATIONS } from './i18n';
 import { parseSrtOrVtt } from './iptv';
 import { StorageService } from './storage';
 import { MediaItem, SubtitleCue } from './types';
 
 interface Props {
   item: MediaItem;
+  lang: AppLang;
   onClose: () => void;
 }
 
-export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
+export const PlayerScreen: React.FC<Props> = ({ item, lang, onClose }) => {
+  const t = TRANSLATIONS[lang];
   const videoViewRef = useRef<VideoView>(null);
   const player = useVideoPlayer(
     {
@@ -77,20 +80,15 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
         setErrorMsg(null);
       } else if (status === 'error') {
         setIsBuffering(false);
-        setErrorMsg(
-          error?.message || 'تعذر تشغيل البث (قد يكون السيرفر متوقف أو بطيء)'
-        );
+        setErrorMsg(error?.message || t.serverConnectError);
       }
     });
 
     return () => {
       backSub.remove();
       statusSub.remove();
-      ScreenOrientation.lockAsync(
-        ScreenOrientation.OrientationLock.PORTRAIT_UP
-      ).catch(() => {});
     };
-  }, [item, onClose, player]);
+  }, [item, onClose, player, t.serverConnectError]);
 
   useEffect(() => {
     const timer = setInterval(async () => {
@@ -136,13 +134,13 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
           setBrightness((prev) => {
             const next = Math.min(1, Math.max(0.05, prev + delta));
             Brightness.setBrightnessAsync(next).catch(() => {});
-            setGestureText(`الإضاءة: ${Math.round(next * 100)}%`);
+            setGestureText(`${t.brightness}: ${Math.round(next * 100)}%`);
             return next;
           });
         } else {
           const nextVol = Math.min(1, Math.max(0, (player.volume ?? 1) + delta));
           player.volume = nextVol;
-          setGestureText(`الصوت: ${Math.round(nextVol * 100)}%`);
+          setGestureText(`${t.volume}: ${Math.round(nextVol * 100)}%`);
         }
       },
       onPanResponderRelease: () => {
@@ -157,7 +155,7 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
     if (now - lastTapRef.current.time < 300) {
       const isLeft = x < width / 2;
       player.currentTime = Math.max(0, player.currentTime + (isLeft ? -10 : 10));
-      setGestureText(isLeft ? '-10 ثواني' : '+10 ثواني');
+      setGestureText(isLeft ? `-10 ${t.sec}` : `+10 ${t.sec}`);
       setTimeout(() => setGestureText(null), 700);
     } else {
       setShowControls((s) => !s);
@@ -227,7 +225,7 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
               player.play();
             }}
           >
-            <Text style={styles.retryText}>إعادة المحاولة</Text>
+            <Text style={styles.retryText}>{t.retry}</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -248,7 +246,7 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
         <View style={styles.overlay}>
           <View style={styles.topBar}>
             <TouchableOpacity onPress={onClose} style={styles.iconBtn}>
-              <Text style={styles.btnLabel}>رجوع ✕</Text>
+              <Text style={styles.btnLabel}>{t.back}</Text>
             </TouchableOpacity>
             <Text style={styles.title} numberOfLines={1}>
               {item.name}
@@ -272,7 +270,7 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
               <Text style={styles.btnLabel}>CC</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={cycleFit} style={styles.iconBtn}>
-              <Text style={styles.btnLabel}>الأبعاد</Text>
+              <Text style={styles.btnLabel}>{t.aspect}</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={cycleRate} style={styles.iconBtn}>
               <Text style={styles.btnLabel}>{rate}x</Text>
@@ -285,7 +283,7 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
               onPress={() => (isPlaying ? player.pause() : player.play())}
             >
               <Text style={styles.playBtnText}>
-                {isPlaying ? 'إيقاف ❚❚' : 'تشغيل ▶'}
+                {isPlaying ? t.pause : t.play}
               </Text>
             </TouchableOpacity>
           </View>
