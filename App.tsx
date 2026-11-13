@@ -24,15 +24,20 @@ import { MainScreen } from './src/MainScreen';
 import { MultiScreen } from './src/MultiScreen';
 import { PlayerScreen } from './src/PlayerScreen';
 import { StorageService } from './src/storage';
-import { EpgProgram, MediaItem, WatchProgress } from './src/types';
+import {
+  EpgProgram,
+  MediaItem,
+  PlaylistSource,
+  WatchProgress,
+} from './src/types';
 
 export default function App() {
   const [lang, setLang] = useState<AppLang>('ar');
   const t = TRANSLATIONS[lang];
 
   const [showIntro, setShowIntro] = useState(true);
+  const [source, setSource] = useState<PlaylistSource | null>(null);
   const [hasSource, setHasSource] = useState<boolean | null>(null);
-  const [title, setTitle] = useState('Z8 Player');
   const [items, setItems] = useState<MediaItem[]>([]);
   const [epgMap, setEpgMap] = useState<Record<string, EpgProgram>>({});
   const [favorites, setFavorites] = useState<MediaItem[]>([]);
@@ -41,11 +46,15 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const [playingItem, setPlayingItem] = useState<MediaItem | null>(null);
+  const [playingList, setPlayingList] = useState<MediaItem[]>([]);
   const [multiScreenOpen, setMultiScreenOpen] = useState(false);
 
   const [pinModalVisible, setPinModalVisible] = useState(false);
   const [pinInput, setPinInput] = useState('');
-  const [pendingItem, setPendingItem] = useState<MediaItem | null>(null);
+  const [pendingPlay, setPendingPlay] = useState<{
+    item: MediaItem;
+    list: MediaItem[];
+  } | null>(null);
   const [settingNewPin, setSettingNewPin] = useState(false);
 
   const handleIntroFinish = useCallback(() => setShowIntro(false), []);
@@ -84,10 +93,10 @@ export default function App() {
       setHasSource(false);
       return;
     }
+    setSource(src);
     setHasSource(true);
-    setTitle(src.name);
     await refreshUserData();
-    await loadPlaylist();
+    await loadPlaylist(src);
   };
 
   const refreshUserData = async () => {
@@ -101,8 +110,8 @@ export default function App() {
     setLockedCats(locks);
   };
 
-  const loadPlaylist = async () => {
-    const src = await StorageService.getSource();
+  const loadPlaylist = async (activeSrc?: PlaylistSource | null) => {
+    const src = activeSrc || (await StorageService.getSource());
     if (!src) return;
     setLoading(true);
     try {
@@ -123,17 +132,18 @@ export default function App() {
     }
   };
 
-  const handleSelectItem = async (item: MediaItem) => {
+  const handlePlayItem = async (item: MediaItem, list: MediaItem[]) => {
     if (lockedCats.includes(item.category)) {
       const savedPin = await StorageService.getPin();
       if (savedPin) {
-        setPendingItem(item);
+        setPendingPlay({ item, list });
         setSettingNewPin(false);
         setPinInput('');
         setPinModalVisible(true);
         return;
       }
     }
+    setPlayingList(list);
     setPlayingItem(item);
   };
 
@@ -147,10 +157,11 @@ export default function App() {
       return;
     }
     const savedPin = await StorageService.getPin();
-    if (pinInput === savedPin && pendingItem) {
+    if (pinInput === savedPin && pendingPlay) {
       setPinModalVisible(false);
-      setPlayingItem(pendingItem);
-      setPendingItem(null);
+      setPlayingList(pendingPlay.list);
+      setPlayingItem(pendingPlay.item);
+      setPendingPlay(null);
     } else {
       Alert.alert(t.error, t.wrongPin);
     }
@@ -161,7 +172,7 @@ export default function App() {
   if (hasSource === null) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#F59E0B" />
+        <ActivityIndicator size="large" color="#C8E64C" />
       </View>
     );
   }
@@ -183,7 +194,9 @@ export default function App() {
     return (
       <PlayerScreen
         item={playingItem}
+        channelList={playingList}
         lang={lang}
+        onSelectChannel={(next) => setPlayingItem(next)}
         onClose={() => {
           setPlayingItem(null);
           refreshUserData();
@@ -204,7 +217,8 @@ export default function App() {
   return (
     <>
       <MainScreen
-        title={title}
+        title={source?.name || 'Z8 Player'}
+        source={source}
         lang={lang}
         items={items}
         epgMap={epgMap}
@@ -213,10 +227,10 @@ export default function App() {
         lockedCats={lockedCats}
         loading={loading}
         onChangeLang={changeLanguage}
-        onSelectItem={handleSelectItem}
+        onPlayItem={handlePlayItem}
         onOpenMultiScreen={() => setMultiScreenOpen(true)}
         onOpenServer={() => setHasSource(false)}
-        onRefresh={loadPlaylist}
+        onRefresh={() => loadPlaylist(source)}
         onOpenSetPin={() => {
           setSettingNewPin(true);
           setPinInput('');
@@ -250,10 +264,10 @@ export default function App() {
                 <Text style={{ color: '#FFF', fontSize: 12 }}>{t.cancel}</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.btn, { backgroundColor: '#F59E0B' }]}
+                style={[styles.btn, { backgroundColor: '#C8E64C' }]}
                 onPress={handlePinConfirm}
               >
-                <Text style={{ color: '#000', fontWeight: 'bold' }}>
+                <Text style={{ color: '#0B132B', fontWeight: 'bold' }}>
                   {t.confirm}
                 </Text>
               </TouchableOpacity>
@@ -268,7 +282,7 @@ export default function App() {
 const styles = StyleSheet.create({
   center: {
     flex: 1,
-    backgroundColor: '#0E1117',
+    backgroundColor: '#0B132B',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -279,7 +293,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   pinBox: {
-    backgroundColor: '#161B22',
+    backgroundColor: '#162447',
     padding: 20,
     borderRadius: 12,
     width: '45%',
@@ -287,7 +301,7 @@ const styles = StyleSheet.create({
   },
   pinTitle: { color: '#FFF', fontSize: 15, marginBottom: 10 },
   pinInput: {
-    backgroundColor: '#0E1117',
+    backgroundColor: '#0B132B',
     color: '#FFF',
     width: '60%',
     textAlign: 'center',
@@ -297,7 +311,7 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   btn: {
-    backgroundColor: '#21262D',
+    backgroundColor: '#1E3A8A',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 6,
