@@ -26,33 +26,124 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Configure app.json
+      - name: Generate Z8 Icon & Configure Landscape
         run: |
-          node -e '
+          node << 'EOF'
           const fs = require("fs");
+          const zlib = require("zlib");
+
+          // توليد أيقونة PNG عالية الدقة 512x512 بشعار Z8 الذهبي
+          const W = 512, H = 512;
+          const raw = Buffer.alloc((W * 4 + 1) * H);
+
+          const distSeg = (px, py, ax, ay, bx, by) => {
+            const vx = bx - ax, vy = by - ay;
+            const wx = px - ax, wy = py - ay;
+            const c1 = wx * vx + wy * vy;
+            const c2 = vx * vx + vy * vy;
+            const t = c2 > 0 ? Math.max(0, Math.min(1, c1 / c2)) : 0;
+            return Math.hypot(px - (ax + t * vx), py - (ay + t * vy));
+          };
+
+          for (let y = 0; y < H; y++) {
+            const rowOffset = y * (W * 4 + 1);
+            raw[rowOffset] = 0;
+            const v = y / H;
+            for (let x = 0; x < W; x++) {
+              const u = x / W;
+              // مثلث التشغيل
+              const dTri = Math.min(
+                distSeg(u, v, 0.14, 0.28, 0.14, 0.72),
+                distSeg(u, v, 0.14, 0.28, 0.41, 0.50),
+                distSeg(u, v, 0.14, 0.72, 0.41, 0.50)
+              ) - 0.023;
+              // حرف Z
+              const dZ = Math.min(
+                distSeg(u, v, 0.45, 0.30, 0.65, 0.30),
+                distSeg(u, v, 0.65, 0.30, 0.45, 0.70),
+                distSeg(u, v, 0.45, 0.70, 0.65, 0.70)
+              ) - 0.025;
+              // رقم 8
+              const d8Top = Math.abs(Math.hypot(u - 0.79, v - 0.40) - 0.092) - 0.024;
+              const d8Bot = Math.abs(Math.hypot(u - 0.79, v - 0.60) - 0.102) - 0.024;
+              const d = Math.min(dTri, dZ, d8Top, d8Bot);
+
+              const alpha = Math.max(0, Math.min(1, 0.5 - d / 0.005));
+              const idx = rowOffset + 1 + x * 4;
+              raw[idx] = Math.round(9 + (245 - 9) * alpha);
+              raw[idx + 1] = Math.round(13 + (158 - 13) * alpha);
+              raw[idx + 2] = Math.round(22 + (11 - 22) * alpha);
+              raw[idx + 3] = 255;
+            }
+          }
+
+          const crcTable = new Uint32Array(256);
+          for (let n = 0; n < 256; n++) {
+            let c = n;
+            for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+            crcTable[n] = c;
+          }
+          const chunk = (type, data) => {
+            const len = Buffer.alloc(4);
+            len.writeUInt32BE(data.length, 0);
+            const tBuf = Buffer.from(type);
+            const body = Buffer.concat([tBuf, data]);
+            let crc = 0xffffffff;
+            for (let i = 0; i < body.length; i++) crc = crcTable[(crc ^ body[i]) & 0xff] ^ (crc >>> 8);
+            const cBuf = Buffer.alloc(4);
+            cBuf.writeUInt32BE((crc ^ 0xffffffff) >>> 0, 0);
+            return Buffer.concat([len, body, cBuf]);
+          };
+
+          const ihdr = Buffer.alloc(13);
+          ihdr.writeUInt32BE(W, 0);
+          ihdr.writeUInt32BE(H, 4);
+          ihdr[8] = 8; ihdr[9] = 6;
+
+          const png = Buffer.concat([
+            Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+            chunk("IHDR", ihdr),
+            chunk("IDAT", zlib.deflateSync(raw)),
+            chunk("IEND", Buffer.alloc(0))
+          ]);
+
+          fs.mkdirSync("assets", { recursive: true });
+          fs.writeFileSync("assets/icon.png", png);
+
           const app = JSON.parse(fs.readFileSync("app.json", "utf8"));
           app.expo = app.expo || {};
+          app.expo.name = "Z8 Player";
+          app.expo.orientation = "landscape";
+          app.expo.icon = "./assets/icon.png";
           app.expo.android = app.expo.android || {};
           if (!app.expo.android.package) app.expo.android.package = "com.paneldi22.z8player";
+          app.expo.android.adaptiveIcon = {
+            foregroundImage: "./assets/icon.png",
+            backgroundColor: "#090D16"
+          };
+          delete app.expo.splash;
+          delete app.expo.android.splash;
           fs.writeFileSync("app.json", JSON.stringify(app, null, 2));
-          '
+          EOF
 
       - name: Prebuild Android
         run: npx expo prebuild --platform android --no-install
 
       - name: Allow HTTP IPTV Streams
         run: |
-          node -e '
+          node << 'EOF'
           const fs = require("fs");
           const p = "android/app/src/main/AndroidManifest.xml";
           let xml = fs.readFileSync(p, "utf8");
           if (!xml.includes("usesCleartextTraffic")) {
-            xml = xml.replace("<application", "<application android:usesCleartextTraffic=\"true\"");
+            xml = xml.replace("<application", '<application android:usesCleartextTraffic="true"');
           }
           fs.writeFileSync(p, xml);
-          '
+          EOF
 
       - name: Build Release APK
+        env:
+          ORG_GRADLE_PROJECT_org.gradle.jvmargs: "-Xmx4096m -XX:MaxMetaspaceSize=1024m"
         run: cd android && chmod +x gradlew && ./gradlew assembleRelease
 
       - name: Upload APK
