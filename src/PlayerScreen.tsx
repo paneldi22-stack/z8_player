@@ -60,7 +60,6 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
     };
   }, [item]);
 
-  // تتبع الوقت والترجمة وحفظ إكمال المشاهدة
   useEffect(() => {
     const timer = setInterval(async () => {
       const cur = player.currentTime || 0;
@@ -69,7 +68,6 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
       setDurationSec(dur);
       setIsPlaying(player.playing);
 
-      // استرجاع الدقيقة المحفوظة للأفلام
       if (!restoredRef.current && dur > 0 && item.type === 'movie') {
         restoredRef.current = true;
         const savedMs = await StorageService.getSavedPosition(item.streamUrl);
@@ -78,14 +76,12 @@ export const PlayerScreen: React.FC<Props> = ({ item, onClose }) => {
         }
       }
 
-      // الترجمة المتزامنة
       if (cues.length > 0) {
         const curMs = cur * 1000;
         const found = cues.find((c) => curMs >= c.startMs && curMs <= c.endMs);
         setActiveSubtitle(found ? found.text : '');
       }
 
-      // حفظ التقدم كل 5 ثواني
       const wholeSec = Math.floor(cur);
       if (wholeSec - lastSavedSecRef.current >= 5) {
         lastSavedSecRef.current = wholeSec;
